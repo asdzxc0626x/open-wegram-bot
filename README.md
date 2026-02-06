@@ -18,6 +18,7 @@
 - 🔒 **安全可靠** - 使用 Telegram 官方 API 和安全令牌
 - 🔌 **多机器人支持** - 一个部署可注册多个私聊机器人
 - 🛠️ **多种部署方式** - 支持 GitHub 一键部署、Vercel 一键部署、Wrangler CLI 和 Dashboard 部署
+- 🤖 **智能人机验证** - 可选的数学题验证功能，防止垃圾消息和机器人滥用（需配置 KV 存储）
 
 ## 🛠️ 前置要求
 
@@ -254,6 +255,125 @@ https://open-wegram-bot.username.workers.dev/public/install/123456789/000000000:
 https://your-worker-url/YOUR_PREFIX/uninstall/BOT_API_TOKEN
 ```
 
+## 🤖 人机验证功能（可选）
+
+本项目支持可选的智能人机验证功能，可以有效防止垃圾消息和机器人滥用。
+
+### 功能特点
+
+- ✅ **复杂数学题验证** - 使用包含 3 个运算符的数学表达式，支持加减乘运算和运算优先级
+- ✅ **Owner 完全豁免** - Bot 所有者（Owner）发送和回复消息时完全不触发验证
+- ✅ **失败惩罚机制** - 用户验证失败 3 次后将被禁用 24 小时
+- ✅ **友好的用户体验** - 显示剩余尝试次数和禁用剩余时间
+- ✅ **自动过期清理** - 定期清理过期的验证记录和禁用记录
+- ✅ **验证有效期** - 通过验证后在指定天数内无需重复验证
+
+### 配置要求
+
+要启用人机验证功能，需要配置以下环境变量：
+
+#### 必需配置
+
+1. **KV_NAMESPACE_ID** - Cloudflare KV 存储命名空间 ID
+   - 用途：存储用户验证状态和禁用记录
+   - 获取方式：
+     ```bash
+     # 使用 Wrangler CLI 创建 KV namespace
+     npx wrangler kv:namespace create "VERIFICATION_STORE"
+     ```
+   - 创建后会返回类似 `id = "abc123def456..."` 的 ID，将此 ID 配置为环境变量
+
+2. **VERIFICATION_ENABLED** - 是否启用验证功能
+   - 可选值：`true` 或 `false`
+   - 默认值：`false`（未配置时）
+   - 说明：即使配置了 KV namespace，也需要将此项设置为 `true` 才会启用验证
+
+#### 可选配置
+
+3. **VERIFICATION_TIMEOUT_DAYS** - 验证有效期天数
+   - 类型：数字
+   - 默认值：`7`（7 天）
+   - 说明：用户通过验证后，在此天数内发送消息无需重复验证
+
+### 配置示例
+
+#### Cloudflare Workers (wrangler.toml)
+
+```toml
+name = "open-wegram-bot"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "your_kv_namespace_id_here"
+
+[vars]
+PREFIX = "public"
+VERIFICATION_ENABLED = "true"
+VERIFICATION_TIMEOUT_DAYS = "7"
+```
+
+#### GitHub Actions 部署
+
+在 GitHub Secrets 中添加：
+- `KV_NAMESPACE_ID`: 您的 KV namespace ID
+- `VERIFICATION_ENABLED`: `true`
+- `VERIFICATION_TIMEOUT_DAYS`: `7`（可选，默认为 7）
+
+#### Vercel / Deno / Netlify / EdgeOne
+
+在对应平台的环境变量配置中添加：
+- `KV_NAMESPACE_ID`: 您的 KV namespace ID（注意：仅 Cloudflare Workers 支持 KV 存储）
+- `VERIFICATION_ENABLED`: `true`
+- `VERIFICATION_TIMEOUT_DAYS`: `7`
+
+> [!NOTE]
+> KV 存储是 Cloudflare Workers 的特性，其他平台（Vercel、Deno、Netlify、EdgeOne）暂不支持人机验证功能。
+
+### 验证流程说明
+
+1. **首次发送消息**：未验证的用户发送消息时，会收到一道数学题（例如：`12 + 5 × 3 - 8 = ?`）
+2. **回答问题**：用户点击正确答案后，验证通过，消息正常转发给 Owner
+3. **验证失败**：
+   - 第 1 次失败：显示"❌ 答案错误，剩余 2 次机会"，重新生成新题目
+   - 第 2 次失败：显示"❌ 答案错误，剩余 1 次机会"，重新生成新题目
+   - 第 3 次失败：显示"❌ 验证失败次数过多，已被禁用 24 小时"，用户被禁用 24 小时
+4. **禁用期间**：被禁用的用户发送消息时会收到提示："⛔ 您因多次验证失败已被暂时禁用。请在 X 小时后再试。"
+5. **验证有效期**：通过验证后，用户在配置的天数内（默认 7 天）发送消息无需重复验证
+6. **Owner 豁免**：Bot 所有者（Owner）发送消息和回复消息时完全不触发验证流程
+
+### 自动清理功能
+
+项目支持定期清理过期的验证记录和禁用记录，释放 KV 存储空间。
+
+#### 方式一：Cron Trigger（推荐）
+
+在 `wrangler.toml` 中启用 Cron Trigger：
+
+```toml
+[triggers]
+crons = ["0 2 * * *"]  # 每天凌晨 2 点执行清理
+```
+
+#### 方式二：手动清理
+
+访问清理端点（需要 Bearer Token 认证）：
+
+```bash
+curl -X GET "https://your-worker-url/YOUR_PREFIX/cleanup" \
+  -H "Authorization: Bearer YOUR_SECRET_TOKEN"
+```
+
+返回示例：
+```json
+{
+  "success": true,
+  "scannedCount": 150,
+  "deletedVerifications": 45,
+  "deletedBans": 3,
+  "message": "Cleanup completed successfully"
+}
+```
+
 ## 🔒 安全说明
 
 > [!IMPORTANT]
@@ -268,14 +388,34 @@ https://your-worker-url/YOUR_PREFIX/uninstall/BOT_API_TOKEN
 
 ## ⚠️ 使用限制
 
+### Cloudflare Worker 免费套餐限制
+
 > [!NOTE]
-> Cloudflare Worker 免费套餐有每日 10 万请求的限制。
+> Cloudflare Worker 免费套餐有以下限制：
+> - **请求数量**：每日 10 万请求
+> - **KV 存储空间**：1 GB（启用人机验证功能时使用）
+> - **KV 读取操作**：每日 10 万次
+> - **KV 写入操作**：每日 1000 次
 
-对于个人使用的私聊机器人来说，这个限制通常足够宽松。即使您注册了多个机器人，除非您的机器人极其活跃，否则不太可能达到这个限制。
+对于个人使用的私聊机器人来说，这些限制通常足够宽松。即使您注册了多个机器人，除非您的机器人极其活跃，否则不太可能达到这些限制。
 
-如果您预计使用量较大，可以考虑升级到 Cloudflare 的付费计划。
+### 关于 KV 存储使用
+
+如果启用了人机验证功能：
+- 每个用户通过验证会产生 1 次 KV 写入操作
+- 每次用户发送消息会产生 1-2 次 KV 读取操作
+- 验证失败会产生额外的 KV 写入操作
+- 建议启用自动清理功能，定期删除过期记录以节省存储空间
+
+### 升级选项
+
+如果您预计使用量较大，可以考虑升级到 Cloudflare 的付费计划：
+- **Workers Paid**（$5/月）：每月 1000 万请求，KV 操作限制大幅提升
+- 超出部分按量计费，价格合理
 
 ## 🔍 故障排除
+
+### 基础问题
 
 - **消息未转发**: 确保 Bot 已正确注册，并检查 Worker 日志
 - **无法访问注册 URL**: 确认您是否相信科学，或者考虑绑定自定义域名解决访问问题
@@ -283,6 +423,39 @@ https://your-worker-url/YOUR_PREFIX/uninstall/BOT_API_TOKEN
 - **注册失败**: 确保您的 `SECRET_TOKEN` 符合要求（包含大小写字母和数字，长度至少16位）
 - **GitHub 部署失败**: 检查环境变量是否正确设置，仓库权限是否正确
 - **Worker 部署失败**: 检查 Wrangler 配置并确保您已登录到 Cloudflare
+
+### 人机验证相关问题
+
+- **验证功能未生效**:
+  - 检查是否正确配置了 `KV_NAMESPACE_ID`
+  - 确认 `VERIFICATION_ENABLED` 设置为 `true`
+  - 确保 KV namespace 已在 Cloudflare 中创建并绑定到 Worker
+  - 查看 Worker 日志确认 KV 绑定是否成功
+
+- **Owner 也收到验证题目**:
+  - 确认注册 Bot 时使用的 `OWNER_UID` 是否正确
+  - 检查是否使用了正确的 Telegram UID（数字格式）
+  - 可以向 [@userinfobot](https://t.me/userinfobot) 确认您的 UID
+
+- **用户被误封禁**:
+  - 可以通过手动清理端点清除特定用户的禁用记录
+  - 或等待 24 小时后自动解除禁用
+  - 检查是否有多个用户共享同一 IP 导致的误判
+
+- **验证记录未自动清理**:
+  - 确认 `wrangler.toml` 中的 Cron Trigger 配置是否正确
+  - 检查 Cloudflare Dashboard 中的 Cron Trigger 是否已启用
+  - 可以使用手动清理端点测试清理功能是否正常
+
+- **KV 存储空间不足**:
+  - Cloudflare 免费计划提供 1GB KV 存储空间
+  - 启用自动清理功能定期删除过期记录
+  - 可以适当缩短 `VERIFICATION_TIMEOUT_DAYS` 减少存储占用
+
+- **验证题目太难/太简单**:
+  - 当前使用 3 个运算符的数学表达式（加减乘）
+  - 如需调整难度，可以修改 `src/core.js` 中的 `generateMathQuestion()` 函数
+  - 支持自定义数字范围和运算符类型
 
 ## 🤝 贡献与联系
 
