@@ -5,7 +5,7 @@
  * GitHub Repository: https://github.com/wozulong/open-wegram-bot
  */
 
-import {handleRequest} from './core.js';
+import {handleRequest, cleanupExpiredVerifications} from './core.js';
 
 export default {
     async fetch(request, env, ctx) {
@@ -19,5 +19,17 @@ export default {
 
         // 修改点：添加人机验证功能 - 传递 KV binding
         return handleRequest(request, config, env.VERIFICATION_KV);
+    },
+
+    // 修改点：添加定时清理功能 - Cron Trigger handler
+    async scheduled(event, env, ctx) {
+        const timeoutDays = parseInt(env.VERIFICATION_TIMEOUT_DAYS || '7');
+
+        try {
+            const result = await cleanupExpiredVerifications(env.VERIFICATION_KV, timeoutDays);
+            console.log('Scheduled cleanup result:', result);
+        } catch (error) {
+            console.error('Scheduled cleanup error:', error);
+        }
     }
 };
